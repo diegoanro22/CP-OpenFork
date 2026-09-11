@@ -182,6 +182,11 @@ de anidamiento a cambio de un reuso de caché que en este rango de N no era el c
 tiling empieza a ganar cuando las matrices son mucho más grandes que la caché de último nivel, y en
 esta máquina con N=2048 todavía no se llega a ese punto.
 
+Esa hipótesis quedó confirmada al medir en la tercera máquina (sección 3.7): en un i5-9600K con 9 MB
+de L3, donde los 12 MB de las tres matrices ya no caben, `tiled` **sí** es la variante más rápida.
+La conclusión correcta no es "el tiling no sirve", sino que su beneficio depende de la relación entre
+el tamaño del problema y la caché de último nivel de la máquina donde se corra.
+
 ### 3.3 Blur: `static` alcanza hasta 8 hilos, después conviene `dynamic`
 
 Hasta 8 hilos las tres estrategias quedan prácticamente empatadas. De ahí para arriba se separan:
@@ -314,31 +319,86 @@ Blur, 7680×4320 (tiempo secuencial base: ___ s):
 
 ---
 
-### 3.7 Mediciones de Oliver Viau
+### 3.7 Mediciones de Olivier Viau
 
-**Equipo:** _(pendiente: correr `./scripts/bench.sh <tu-nombre>` y pegar aquí el contenido de
-`resultados/maquina_<tu-nombre>.txt`)_
-**Datos crudos:** `resultados/matrices_<tu-nombre>.csv` · `resultados/blur_<tu-nombre>.csv`
+**Equipo:** ver [`resultados/maquina_Olivier.txt`](resultados/maquina_Olivier.txt) — Intel Core
+i5-9600K @ 3.70 GHz, 6 núcleos físicos / 6 hilos lógicos (sin SMT), 9 MB de caché L3, gcc 16.1.0
+(MSYS2), Windows 10 Pro.
+**Datos crudos:** [`resultados/matrices_Olivier.csv`](resultados/matrices_Olivier.csv) ·
+[`resultados/blur_Olivier.csv`](resultados/blur_Olivier.csv)
 
-Matrices, N=1024 (tiempo secuencial base: ___ s):
+Al tener solo 6 hilos lógicos, el barrido llega hasta 4 hilos: correr con 6 u 8 dejaría al proceso
+compitiendo con el sistema operativo por los mismos núcleos y los tiempos dejarían de ser
+comparables.
+
+![Speedup y eficiencia en matrices](graficas/matrices_Olivier.png)
+
+![Speedup y eficiencia en blur](graficas/blur_Olivier.png)
+
+Matrices, N=1024 (tiempo secuencial base: 2.378 s):
 
 | Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
 |---|---|---|---|---|---|
-| `ijk` | | | | | |
-| `ikj` | | | | | |
-| `tiled` | | | | | |
+| `ijk` | 1 | 2.281 s | 1.04x | 1.00x | 100.0% |
+| `ijk` | 2 | 1.159 s | 2.05x | 1.97x | 98.4% |
+| `ijk` | 4 | 0.769 s | 3.09x | 2.97x | 74.2% |
+| `ikj` | 1 | 0.716 s | 3.32x | 1.00x | 100.0% |
+| `ikj` | 2 | 0.354 s | 6.72x | 2.02x | 101.1% |
+| `ikj` | 4 | 0.197 s | 12.07x | 3.63x | 90.9% |
+| `tiled` | 1 | 0.632 s | 3.76x | 1.00x | 100.0% |
+| `tiled` | 2 | 0.356 s | 6.68x | 1.78x | 88.8% |
+| `tiled` | 4 | **0.174 s** | **13.67x** | 3.63x | 90.8% |
 
-Blur, 7680×4320 (tiempo secuencial base: ___ s):
+Blur, 7680×4320 (tiempo secuencial base: 0.350 s):
 
-| Variante | Hilos | Tiempo | Speedup | Eficiencia |
-|---|---|---|---|---|
-| `filas` | | | | |
-| `collapse` | | | | |
-| `dynamic` | | | | |
+| Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
+|---|---|---|---|---|---|
+| `filas` | 1 | 0.337 s | 1.04x | 1.00x | 100.0% |
+| `filas` | 2 | 0.184 s | 1.90x | 1.83x | 91.6% |
+| `filas` | 4 | **0.098 s** | **3.57x** | 3.44x | 86.0% |
+| `collapse` | 1 | 0.389 s | 0.90x | 1.00x | 100.0% |
+| `collapse` | 2 | 0.212 s | 1.65x | 1.83x | 91.7% |
+| `collapse` | 4 | 0.135 s | 2.59x | 2.88x | 72.0% |
+| `dynamic` | 1 | 0.595 s | 0.59x | 1.00x | 100.0% |
+| `dynamic` | 2 | 0.279 s | 1.25x | 2.13x | 106.6% |
+| `dynamic` | 4 | 0.099 s | 3.54x | 6.01x | 150.3% |
 
-**Lectura de estos números.** _(pendiente)_
+**Lectura de estos números.** Esta máquina es la contraparte útil de la de Diego: seis núcleos sin
+SMT y 9 MB de L3 contra dieciséis núcleos con SMT y una L3 mucho más grande. Tres cosas cambian.
 
-> _Capturas de las corridas:_ `resultados/capturas/` — pendiente de agregar.
+**El reordenamiento de ciclos rinde bastante menos.** `ikj` con un hilo es 3.3x más rápido que el
+secuencial, no 19.5x. La diferencia no está en el algoritmo sino en el punto de partida: el
+secuencial original ya corre en 2.38 s aquí contra 8.01 s en la máquina de Diego, porque este i5
+tiene mayor frecuencia por núcleo y menos penalización en los accesos salteados a `B`. El
+reordenamiento sigue siendo la optimización más rentable por unidad de esfuerzo —un cambio de tres
+líneas que vale más que pasar de 1 a 4 hilos— pero cuánto exactamente rinde depende de la máquina.
+
+**Aquí el tiling sí paga, y es el resultado opuesto al de la sección 3.2.** `tiled` con 4 hilos da el
+mejor tiempo en matrices (0.174 s contra 0.197 s de `ikj`, 12% mejor), y también gana con 1 hilo
+(0.632 s contra 0.716 s). La explicación cierra con la que se dio en 3.2: con N=1024 e `int`, las
+tres matrices ocupan 12 MB y no caben en los 9 MB de L3 de este procesador, así que el bloqueo por
+tiles evita releer `B` desde RAM y se paga solo. En la máquina de Diego, con una L3 mucho más grande,
+las mismas matrices caben enteras y el tiling solo agrega aritmética de índices. Es decir, el tiling
+no es "una optimización que no paga": paga exactamente cuando el conjunto de trabajo excede la última
+caché, que es lo que predice la teoría.
+
+**En blur, `dynamic` no conviene.** Con 4 hilos empata con `filas` (0.099 s contra 0.098 s), y su
+corrida de un hilo es notablemente más lenta (0.595 s contra 0.337 s). El 150% de eficiencia paralela
+de `dynamic` con 4 hilos es un artefacto de esa línea base mala, no una ganancia real: comparado
+contra el secuencial verdadero el speedup es 3.54x, prácticamente el mismo que el de `filas`. La
+ventaja que `dynamic` mostraba en la máquina de Diego aparecía recién con 16 hilos, cuando los hilos
+dejan de avanzar al mismo ritmo por competir entre sí; con 4 núcleos exclusivos ese desbalance no
+existe y solo queda el costo de repartir bloques en tiempo de ejecución. `collapse` pierde por el
+mismo motivo que allá: es más lento incluso con un hilo (0.389 s contra 0.337 s).
+
+En blur, la eficiencia con `filas` se mantiene en 86% con 4 hilos, mejor que el 61% que se veía con
+16 hilos en la otra máquina. Con pocos núcleos el ancho de banda de memoria todavía alcanza; el techo
+de 3.57x sobre 4 hilos es un escalamiento sano y el límite aquí es simplemente la cantidad de núcleos
+disponibles, no la RAM.
+
+Corrida completa del benchmark:
+
+![Corrida de bench.ps1 en la máquina de Olivier](resultados/capturas/Bench_OLI.png)
 
 ---
 
@@ -346,7 +406,9 @@ Blur, 7680×4320 (tiempo secuencial base: ___ s):
 
 En matrices la ganancia grande vino de reordenar los ciclos, no de OpenMP: `ikj` con un solo hilo ya
 supera al secuencial por 19x, y el paralelismo agrega 14x encima. La optimización que parecía más
-sofisticada —el tiling— resultó ser más lenta que la simple, y lo reportamos así.
+sofisticada —el tiling— resultó ser más lenta que la simple en la máquina con L3 grande y más rápida
+en la de L3 chica: no hay una respuesta única, depende de si el conjunto de trabajo cabe o no en la
+última caché.
 
 En blur la decisión importante no fue la directiva sino mantener los buffers de lectura y escritura
 separados, que es lo que elimina el problema de los bordes de cada recorte, y no arrastrar las

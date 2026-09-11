@@ -1,0 +1,6 @@
+﻿Integrante : Olivier
+Fecha      : 2026-09-10 22:07
+Nucleos    : 6 hilos logicos
+CPU        : Intel(R) Core(TM) i5-9600K CPU @ 3.70GHz
+Compilador : gcc.exe (Rev5, Built by MSYS2 project) 16.1.0
+SO         : Microsoft Windows 10 Pro

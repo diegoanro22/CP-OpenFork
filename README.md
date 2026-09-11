@@ -39,7 +39,8 @@ todas las variantes del mismo algoritmo; si cambia, hay una condición de carrer
 Para reproducir las mediciones completas:
 
 ```sh
-./scripts/bench.sh tu-nombre
+./scripts/bench.sh tu-nombre #Linux o mac
+./scripts/bench.ps1 tu-nombre #En windows
 ```
 
 Barre de 1 hasta la cantidad de hilos de la máquina, corre cada configuración tres veces y se queda
