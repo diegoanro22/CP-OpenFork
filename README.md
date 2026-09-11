@@ -2,7 +2,7 @@
 
 Examen Parcial 1 de Computación Paralela y Distribuida (CC3069), UVG, Semestre II 2026.
 
-**Integrantes:** Diego Rosales · Jose Lopez · Oliver Viau
+**Integrantes:** Diego Rosales · Jose Lopez · Olivier Viau
 
 De los tres problemas que traía el equipo elegimos dos para paralelizar con OpenMP:
 

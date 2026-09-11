@@ -1,7 +1,7 @@
 # Informe técnico
 
 **CC3069 — Computación Paralela y Distribuida · Examen Parcial 1**
-Consultora OpenFork U · Diego Rosales, Jose Lopez, Oliver Viau
+Consultora OpenFork U · Diego Rosales, Jose Lopez, Olivier Viau
 
 ---
 
@@ -135,9 +135,13 @@ millones de iteraciones) y `dynamic` (`schedule(dynamic, 64)`).
 ## 3. Resultados y métricas
 
 Las cifras salen de [`scripts/bench.sh`](../scripts/bench.sh), que corre cada configuración tres
-veces y se queda con la mediana. Antes de escribir un solo tiempo, el script **compara el checksum de
-cada variante paralela contra el de la secuencial y aborta si difieren**, de modo que ningún número
-reportado aquí viene de una corrida que dio un resultado incorrecto.
+veces y se queda con la mediana. En Windows se usó [`scripts/bench.ps1`](../scripts/bench.ps1), que
+hace exactamente lo mismo: las dos versiones leen el tiempo que reporta el propio programa con
+`omp_get_wtime()`, así que los resultados son comparables entre las tres máquinas.
+
+Antes de escribir un solo tiempo, el script **compara el checksum de cada variante paralela contra el
+de la secuencial y aborta si difieren**, de modo que ningún número reportado aquí viene de una
+corrida que dio un resultado incorrecto.
 
 Se reportan dos speedups porque miden cosas distintas:
 
@@ -169,7 +173,7 @@ De los 280x finales, 19.5x salieron de entender el hardware y 14.4x de OpenMP. U
 saltado directo a poner `#pragma omp parallel for` sobre el algoritmo original y se hubiera dado por
 satisfecho con un speedup de 17x, habría dejado un orden de magnitud sobre la mesa.
 
-### 3.2 El tiling es una optimización correcta que aquí no paga
+### 3.2 El tiling solo paga si el conjunto de trabajo no cabe en caché
 
 Implementamos el bloqueo por tiles esperando que fuera la mejor variante —es la respuesta de libro a
 la pregunta de reuso de datos— y resultó consistentemente **más lento que `ikj` a secas**, tanto en
@@ -181,6 +185,12 @@ autovectorización de `-O2` saben aprovechar; el tiling agrega aritmética de í
 de anidamiento a cambio de un reuso de caché que en este rango de N no era el cuello de botella. El
 tiling empieza a ganar cuando las matrices son mucho más grandes que la caché de último nivel, y en
 esta máquina con N=2048 todavía no se llega a ese punto.
+
+Esa última frase resultó ser comprobable dentro del mismo equipo. En la máquina de Olivier, un i5
+con 9 MB de L3, las tres matrices de N=1024 ocupan 12 MB y **no** caben, y ahí el tiling sí gana:
+0.174 s contra 0.197 s de `ikj`. Los números están en la sección 3.7. O sea que el tiling no es una
+optimización inútil, sino una que depende de una condición concreta: que el conjunto de trabajo
+exceda la última caché. En las dos máquinas donde cabía, estorbó.
 
 Esa hipótesis quedó confirmada al medir en la tercera máquina (sección 3.7): en un i5-9600K con 9 MB
 de L3, donde los 12 MB de las tres matrices ya no caben, `tiled` **sí** es la variante más rápida.
@@ -330,11 +340,11 @@ Blur, 7680×4320 (tiempo secuencial base: 0.137 s):
 | `dynamic` | 32 | **0.0420 s** | **3.26x** | 3.36x | 10.5% |
 
 **Lectura de estos números.** En matrices, `ikj` con un solo hilo ya corre 7.24x más rápido que el
-secuencial —un valor intermedio entre el 19.5x de la máquina de Diego y el 3.3x de la de Oliver—,
+secuencial —un valor intermedio entre el 19.5x de la máquina de Diego y el 3.3x de la de Olivier—,
 lo que confirma otra vez que el reordenamiento de ciclos es la optimización que más rinde
 independientemente del hardware, aunque cuánto exactamente depende de la máquina. `tiled` resultó
 consistentemente más lento que `ikj` a cada nivel de hilos (0.0780 s contra 0.0520 s con 32), igual
-que en la máquina de Diego y al contrario que en la de Oliver: con N=1024 e `int`, las tres matrices
+que en la máquina de Diego y al contrario que en la de Olivier: con N=1024 e `int`, las tres matrices
 ocupan 12 MB, y la caché de este i9 (36 MB de L3 compartida) alcanza a contenerlas sin problema, así
 que el bloqueo por tiles solo agrega aritmética de índices. La eficiencia paralela de `ikj` cae más
 rápido que en la máquina de Diego: 58.6% con 8 hilos contra 77.2% allá, y 36.6% con 16 hilos contra
