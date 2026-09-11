@@ -1,0 +1,6 @@
+Integrante : diego
+Fecha      : 2026-09-10 20:31
+Nucleos    : 32 hilos logicos
+CPU        : AMD Ryzen 9 8940HX with Radeon Graphics
+Compilador : gcc (GCC) 16.2.1 20260810
+SO         : Linux 7.2.0-1-cachyos

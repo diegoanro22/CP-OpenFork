@@ -131,3 +131,230 @@ Se probaron tres formas de repartir para poder justificar la elección con datos
 millones de iteraciones) y `dynamic` (`schedule(dynamic, 64)`).
 
 ---
+
+## 3. Resultados y métricas
+
+Las cifras salen de [`scripts/bench.sh`](../scripts/bench.sh), que corre cada configuración tres
+veces y se queda con la mediana. Antes de escribir un solo tiempo, el script **compara el checksum de
+cada variante paralela contra el de la secuencial y aborta si difieren**, de modo que ningún número
+reportado aquí viene de una corrida que dio un resultado incorrecto.
+
+Se reportan dos speedups porque miden cosas distintas:
+
+- **Speedup total** = `T(secuencial original) / T(variante con p hilos)`. Es la mejora que
+  efectivamente recibe el cliente.
+- **Speedup paralelo** = `T(la misma variante con 1 hilo) / T(con p hilos)`. Aísla lo que aportó
+  OpenMP, ya descontada la mejora que vino de reordenar los ciclos. Es el número honesto para juzgar
+  la calidad del paralelismo, y es el que se usa para la eficiencia (`speedup / p`).
+
+Los CSV completos de cada integrante están en [`resultados/`](resultados/), y las gráficas
+correspondientes en [`graficas/`](graficas/), generadas con
+[`scripts/graficar.py`](../scripts/graficar.py).
+
+### 3.1 Hallazgo principal: la mitad de la ganancia no vino de paralelizar
+
+El resultado más importante del trabajo es que en matrices, **la variante `ikj` corriendo con un solo
+hilo ya es 16 veces más rápida que el secuencial original**. Sin OpenMP. Sin un solo hilo adicional.
+Solo cambiando el orden de tres ciclos anidados para que la memoria se lea de corrido.
+
+Medido en N=2048, donde el efecto es más claro (`docs/resultados/matrices_n2048_diego.txt`):
+
+| | Tiempo | Contra el secuencial |
+|---|---|---|
+| `seq`, 1 hilo | 78.92 s | 1x |
+| `ikj`, 1 hilo | 4.06 s | **19.5x** |
+| `ikj`, 16 hilos | 0.28 s | **280x** |
+
+De los 280x finales, 19.5x salieron de entender el hardware y 14.4x de OpenMP. Un equipo que hubiera
+saltado directo a poner `#pragma omp parallel for` sobre el algoritmo original y se hubiera dado por
+satisfecho con un speedup de 17x, habría dejado un orden de magnitud sobre la mesa.
+
+### 3.2 El tiling es una optimización correcta que aquí no paga
+
+Implementamos el bloqueo por tiles esperando que fuera la mejor variante —es la respuesta de libro a
+la pregunta de reuso de datos— y resultó consistentemente **más lento que `ikj` a secas**, tanto en
+N=1024 (0.053 s contra 0.048 s con 16 hilos) como en N=2048 (0.351 s contra 0.282 s).
+
+Lo reportamos así porque es el resultado real. La explicación es que a estos tamaños `ikj` ya tiene
+un patrón de acceso perfectamente secuencial, que es justo lo que el prefetcher del hardware y la
+autovectorización de `-O2` saben aprovechar; el tiling agrega aritmética de índices y cinco niveles
+de anidamiento a cambio de un reuso de caché que en este rango de N no era el cuello de botella. El
+tiling empieza a ganar cuando las matrices son mucho más grandes que la caché de último nivel, y en
+esta máquina con N=2048 todavía no se llega a ese punto.
+
+### 3.3 Blur: `static` alcanza hasta 8 hilos, después conviene `dynamic`
+
+Hasta 8 hilos las tres estrategias quedan prácticamente empatadas. De ahí para arriba se separan:
+
+- `collapse(2)` es más lento **incluso con un solo hilo** (0.356 s contra 0.317 s). Aplanar los
+  ciclos obliga a recalcular `i` y `j` a partir de un índice lineal en cada una de las 33 millones de
+  iteraciones. Con 7680 filas y 32 hilos ya hay trabajo de sobra para repartir, así que el
+  paralelismo extra que ofrece no hace falta.
+- `schedule(dynamic, 64)` empata con `static` hasta 8 hilos (0.0426 s contra 0.0421 s), pero con
+  16 hilos **tarda 16% menos** (0.0271 s contra 0.0323 s), y con 32 la diferencia se mantiene
+  (0.0265 s contra 0.0324 s).
+
+Lo segundo nos sorprendió, porque el costo de cada píxel es idéntico y en teoría no hay desbalance
+que corregir. La explicación es que el desbalance no viene de los datos sino del hardware: con 16
+hilos o más, los hilos compiten por el ancho de banda de memoria, y con 32 además comparten núcleo
+físico de a dos. Aunque todos tengan la misma cantidad de trabajo, no todos avanzan al mismo ritmo.
+Con `static` cada hilo recibe una franja fija de la imagen y al final todos esperan al más lento; con
+`dynamic` los hilos que van más rápido simplemente toman más bloques de 64 filas.
+
+Es un contraste interesante con el problema del grafo, donde el desbalance sí viene de los datos
+(unos nodos con 2 vecinos y otros con 10,000). Aquí los datos son perfectamente uniformes y aun así
+`dynamic` termina ganando cuando se usan muchos hilos.
+
+### 3.4 Dónde deja de convenir agregar hilos
+
+Las dos soluciones dejan de escalar bastante antes de los 32 hilos, y por razones distintas.
+
+El blur es un problema **limitado por ancho de banda de memoria**: mueve 66 MB entre los dos buffers
+y hace apenas nueve sumas por píxel. Su eficiencia se mantiene sobre 94% hasta 8 hilos y se cae a
+31% con 32. El dato más claro es que, con el reparto por filas, pasar de 16 a 32 hilos no gana
+absolutamente nada (0.0323 s contra 0.0324 s): los hilos no están calculando, están esperando a la
+RAM.
+
+En matrices, `ikj` con 32 hilos es apenas 11% más rápido que con 16 (0.043 s contra 0.048 s), y
+`tiled` directamente empeora (0.054 s contra 0.053 s). La máquina de prueba tiene 16 núcleos físicos
+con SMT, así que los "32 hilos" son 16 núcleos con dos hilos cada uno compitiendo por la misma
+unidad de ejecución y la misma caché L1; para un ciclo interno que ya satura la unidad vectorial, el
+segundo hilo aporta muy poco. Duplicar los hilos para ganar 11% no es buen negocio.
+
+Caso aparte es `ijk`, que muestra eficiencia **superior al 100%** (hasta 125% con 32 hilos). No es un
+error de medición: al repartir las celdas de `C` entre hilos, cada hilo trabaja sobre un subconjunto
+más pequeño de datos que le cabe mejor en su caché privada, y entre todos suman mucha más caché L1 y
+L2 que un solo hilo. El paralelismo está compensando en parte el mal patrón de acceso del algoritmo
+original. Es una ganancia real, pero conviene leerla como un síntoma de que el algoritmo secuencial
+estaba desaprovechando la caché, no como una virtud de la paralelización.
+
+---
+
+### 3.5 Mediciones de Diego Rosales
+
+**Equipo:** ver [`resultados/maquina_diego.txt`](resultados/maquina_diego.txt) — AMD Ryzen 9 8940HX,
+16 núcleos físicos / 32 hilos lógicos, gcc 16.2.1, Linux.
+**Datos crudos:** [`resultados/matrices_diego.csv`](resultados/matrices_diego.csv) ·
+[`resultados/blur_diego.csv`](resultados/blur_diego.csv)
+
+![Speedup y eficiencia en matrices](graficas/matrices_diego.png)
+
+![Speedup y eficiencia en blur](graficas/blur_diego.png)
+
+Matrices, N=1024 (tiempo secuencial base: 8.01 s):
+
+| Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
+|---|---|---|---|---|---|
+| `ijk` | 8 | 0.9227 s | 8.68x | 9.56x | 119.5% |
+| `ijk` | 16 | 0.4629 s | 17.31x | 19.06x | 119.1% |
+| `ijk` | 32 | 0.2211 s | 36.23x | 39.90x | 124.7% |
+| `ikj` | 8 | 0.0816 s | 98.14x | 6.18x | 77.2% |
+| `ikj` | 16 | 0.0483 s | 165.76x | 10.43x | 65.2% |
+| `ikj` | 32 | **0.0430 s** | **186.26x** | 11.72x | 36.6% |
+| `tiled` | 16 | 0.0526 s | 152.36x | 12.46x | 77.9% |
+| `tiled` | 32 | 0.0536 s | 149.43x | 12.22x | 38.2% |
+
+Blur, 7680×4320 (tiempo secuencial base: 0.3174 s):
+
+| Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
+|---|---|---|---|---|---|
+| `filas` | 2 | 0.1596 s | 1.99x | 1.99x | 99.5% |
+| `filas` | 4 | 0.0804 s | 3.95x | 3.95x | 98.8% |
+| `filas` | 8 | 0.0421 s | 7.53x | 7.53x | 94.2% |
+| `filas` | 16 | 0.0323 s | 9.84x | 9.84x | 61.5% |
+| `filas` | 32 | 0.0324 s | 9.78x | 9.78x | 30.6% |
+| `collapse` | 32 | 0.0298 s | 10.64x | 11.94x | 37.3% |
+| `dynamic` | 16 | 0.0271 s | 11.70x | 11.75x | 73.5% |
+| `dynamic` | 32 | **0.0265 s** | **11.98x** | 12.03x | 37.6% |
+
+**Lectura de estos números.** El mejor resultado en matrices es `ikj` con 32 hilos: 186x sobre el
+secuencial original. Pero con 16 hilos ya se tenía 166x, así que los 16 hilos adicionales compran
+apenas 11% más a cambio de duplicar los recursos, y la eficiencia paralela cae de 65% a 37%. La
+eficiencia de `ikj` empieza a bajar desde los 8 hilos (77%), antes que en las otras variantes:
+cuanto mejor es la línea base, antes se topa con el límite de memoria y menos margen queda para que
+el paralelismo luzca.
+
+En blur la eficiencia se mantiene sobre 94% hasta 8 hilos y luego se derrumba, lo que confirma el
+límite de ancho de banda de memoria. El mejor tiempo lo da `dynamic` con 32 hilos (12x), pero en
+términos prácticos ocho hilos es el punto de mejor relación entre recursos usados y tiempo ganado:
+con 8 hilos se obtiene el 63% del speedup máximo usando el 25% de los hilos.
+
+Corrida completa del benchmark. La línea del secuencial (8.01 s) quedó fuera del recorte, está en el
+CSV:
+
+![Corrida de bench.sh en la máquina de Diego](resultados/capturas/bench_diego.png)
+
+---
+
+### 3.6 Mediciones de Jose Lopez
+
+**Equipo:** _(pendiente: correr `./scripts/bench.sh <tu-nombre>` y pegar aquí el contenido de
+`resultados/maquina_<tu-nombre>.txt`)_
+**Datos crudos:** `resultados/matrices_<tu-nombre>.csv` · `resultados/blur_<tu-nombre>.csv`
+
+Matrices, N=1024 (tiempo secuencial base: ___ s):
+
+| Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
+|---|---|---|---|---|---|
+| `ijk` | | | | | |
+| `ikj` | | | | | |
+| `tiled` | | | | | |
+
+Blur, 7680×4320 (tiempo secuencial base: ___ s):
+
+| Variante | Hilos | Tiempo | Speedup | Eficiencia |
+|---|---|---|---|---|
+| `filas` | | | | |
+| `collapse` | | | | |
+| `dynamic` | | | | |
+
+**Lectura de estos números.** _(pendiente)_
+
+> _Capturas de las corridas:_ `resultados/capturas/` — pendiente de agregar.
+
+---
+
+### 3.7 Mediciones de Oliver Viau
+
+**Equipo:** _(pendiente: correr `./scripts/bench.sh <tu-nombre>` y pegar aquí el contenido de
+`resultados/maquina_<tu-nombre>.txt`)_
+**Datos crudos:** `resultados/matrices_<tu-nombre>.csv` · `resultados/blur_<tu-nombre>.csv`
+
+Matrices, N=1024 (tiempo secuencial base: ___ s):
+
+| Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
+|---|---|---|---|---|---|
+| `ijk` | | | | | |
+| `ikj` | | | | | |
+| `tiled` | | | | | |
+
+Blur, 7680×4320 (tiempo secuencial base: ___ s):
+
+| Variante | Hilos | Tiempo | Speedup | Eficiencia |
+|---|---|---|---|---|
+| `filas` | | | | |
+| `collapse` | | | | |
+| `dynamic` | | | | |
+
+**Lectura de estos números.** _(pendiente)_
+
+> _Capturas de las corridas:_ `resultados/capturas/` — pendiente de agregar.
+
+---
+
+## 4. Conclusiones
+
+En matrices la ganancia grande vino de reordenar los ciclos, no de OpenMP: `ikj` con un solo hilo ya
+supera al secuencial por 19x, y el paralelismo agrega 14x encima. La optimización que parecía más
+sofisticada —el tiling— resultó ser más lenta que la simple, y lo reportamos así.
+
+En blur la decisión importante no fue la directiva sino mantener los buffers de lectura y escritura
+separados, que es lo que elimina el problema de los bordes de cada recorte, y no arrastrar las
+variables temporales del secuencial hacia la región paralela. Con eso resuelto, `schedule(static)`
+por franjas de filas es la respuesta correcta hasta 8 hilos; con más hilos conviene `dynamic`,
+porque los hilos dejan de avanzar al mismo ritmo aunque el trabajo sea el mismo.
+
+Las dos soluciones dejan de escalar entre los 8 y los 16 hilos por saturación de memoria, mucho antes
+de los 32 hilos disponibles. Saber dónde está ese punto es parte del trabajo: pedir 32 hilos para el
+blur cuesta el cuádruple de recursos que pedir 8 y, con el mismo reparto por filas, devuelve apenas
+30% más de velocidad.

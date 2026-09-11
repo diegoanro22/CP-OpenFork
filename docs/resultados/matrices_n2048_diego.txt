@@ -1,0 +1,18 @@
+Corrida puntual con N=2048 para verificar si el tiling paga a mayor escala.
+Maquina: ver maquina_diego.txt
+
+--- 16 hilos ---
+algoritmo=matrices variante=ijk   N=2048 hilos=16 tiempo=4.642045 checksum=173908919077
+algoritmo=matrices variante=ikj   N=2048 hilos=16 tiempo=0.281587 checksum=173908919077
+algoritmo=matrices variante=tiled N=2048 hilos=16 tiempo=0.351332 checksum=173908919077
+
+--- 1 hilo (aisla el efecto de la localidad de datos, sin paralelismo) ---
+algoritmo=matrices variante=seq   N=2048 hilos=1 tiempo=78.915859 checksum=173908919077
+algoritmo=matrices variante=ikj   N=2048 hilos=1 tiempo=4.055993 checksum=173908919077
+algoritmo=matrices variante=tiled N=2048 hilos=1 tiempo=5.210201 checksum=173908919077
+
+Conclusiones:
+- seq (78.92 s) contra ikj con 16 hilos (0.28 s) = 280x de mejora total.
+- De esos 280x, 19.5x salen de reordenar los ciclos (78.92 / 4.06, un solo hilo)
+  y 14.4x de OpenMP (4.06 / 0.28). La mitad de la ganancia no vino de paralelizar.
+- El tiling sigue siendo mas lento que ikj a secas, incluso al duplicar N.
