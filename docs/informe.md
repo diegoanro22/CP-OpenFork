@@ -293,29 +293,75 @@ CSV:
 
 ### 3.6 Mediciones de Jose Lopez
 
-**Equipo:** _(pendiente: correr `./scripts/bench.sh <tu-nombre>` y pegar aquí el contenido de
-`resultados/maquina_<tu-nombre>.txt`)_
-**Datos crudos:** `resultados/matrices_<tu-nombre>.csv` · `resultados/blur_<tu-nombre>.csv`
+**Equipo:** ver [`resultados/maquina_jose.txt`](resultados/maquina_jose.txt) — Intel Core
+i9-13980HX, 32 hilos lógicos (arquitectura híbrida P-cores/E-cores), gcc 14.2.0 (MinGW-W64), Windows 11.
+**Datos crudos:** [`resultados/matrices_jose.csv`](resultados/matrices_jose.csv) ·
+[`resultados/blur_jose.csv`](resultados/blur_jose.csv)
 
-Matrices, N=1024 (tiempo secuencial base: ___ s):
+![Speedup y eficiencia en matrices](graficas/matrices_jose.png)
+
+![Speedup y eficiencia en blur](graficas/blur_jose.png)
+
+Matrices, N=1024 (tiempo secuencial base: 2.376 s):
 
 | Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
 |---|---|---|---|---|---|
-| `ijk` | | | | | |
-| `ikj` | | | | | |
-| `tiled` | | | | | |
+| `ijk` | 8 | 0.4600 s | 5.17x | 5.15x | 64.3% |
+| `ijk` | 16 | 0.3770 s | 6.30x | 6.28x | 39.3% |
+| `ijk` | 32 | 0.3150 s | 7.54x | 7.52x | 23.5% |
+| `ikj` | 8 | 0.0700 s | 33.94x | 4.69x | 58.6% |
+| `ikj` | 16 | 0.0560 s | 42.43x | 5.86x | 36.6% |
+| `ikj` | 32 | **0.0520 s** | **45.69x** | 6.31x | 19.7% |
+| `tiled` | 16 | 0.0800 s | 29.70x | 5.51x | 34.5% |
+| `tiled` | 32 | 0.0780 s | 30.46x | 5.65x | 17.7% |
 
-Blur, 7680×4320 (tiempo secuencial base: ___ s):
+Blur, 7680×4320 (tiempo secuencial base: 0.137 s):
 
-| Variante | Hilos | Tiempo | Speedup | Eficiencia |
-|---|---|---|---|---|
-| `filas` | | | | |
-| `collapse` | | | | |
-| `dynamic` | | | | |
+| Variante | Hilos | Tiempo | Speedup total | Speedup paralelo | Eficiencia |
+|---|---|---|---|---|---|
+| `filas` | 2 | 0.0760 s | 1.80x | 1.75x | 87.5% |
+| `filas` | 4 | 0.0650 s | 2.11x | 2.05x | 51.2% |
+| `filas` | 8 | 0.0610 s | 2.25x | 2.18x | 27.3% |
+| `filas` | 16 | 0.0580 s | 2.36x | 2.29x | 14.3% |
+| `filas` | 32 | 0.0580 s | 2.36x | 2.29x | 7.2% |
+| `collapse` | 32 | 0.0680 s | 2.01x | 2.43x | 7.6% |
+| `dynamic` | 8 | 0.0430 s | 3.19x | 3.28x | 41.0% |
+| `dynamic` | 16 | 0.0480 s | 2.85x | 2.94x | 18.4% |
+| `dynamic` | 32 | **0.0420 s** | **3.26x** | 3.36x | 10.5% |
 
-**Lectura de estos números.** _(pendiente)_
+**Lectura de estos números.** En matrices, `ikj` con un solo hilo ya corre 7.24x más rápido que el
+secuencial —un valor intermedio entre el 19.5x de la máquina de Diego y el 3.3x de la de Oliver—,
+lo que confirma otra vez que el reordenamiento de ciclos es la optimización que más rinde
+independientemente del hardware, aunque cuánto exactamente depende de la máquina. `tiled` resultó
+consistentemente más lento que `ikj` a cada nivel de hilos (0.0780 s contra 0.0520 s con 32), igual
+que en la máquina de Diego y al contrario que en la de Oliver: con N=1024 e `int`, las tres matrices
+ocupan 12 MB, y la caché de este i9 (36 MB de L3 compartida) alcanza a contenerlas sin problema, así
+que el bloqueo por tiles solo agrega aritmética de índices. La eficiencia paralela de `ikj` cae más
+rápido que en la máquina de Diego: 58.6% con 8 hilos contra 77.2% allá, y 36.6% con 16 hilos contra
+65.2% allá. La explicación más probable es la arquitectura híbrida de este procesador: los primeros
+16 hilos lógicos corren en 8 P-cores con Hyper-Threading, pero de ahí en adelante el trabajo se
+reparte también en E-cores más lentos, y como `schedule(static)` asigna a cada hilo el mismo número
+de filas sin importar en qué tipo de núcleo corre, los hilos en E-cores se vuelven el cuello de
+botella y todos los demás terminan esperándolos. El mejor tiempo es `ikj` con 32 hilos (45.69x), pero
+duplicar los hilos de 16 a 32 solo mejora el tiempo un 7% (0.0560 s a 0.0520 s) mientras la eficiencia
+cae de 36.6% a 19.7%, el mismo patrón de rendimientos decrecientes que reporta la sección 3.4.
 
-> _Capturas de las corridas:_ `resultados/capturas/` — pendiente de agregar.
+En blur, `dynamic` le gana a `static` (`filas`) mucho antes que en la máquina de Diego: ya con 8
+hilos `dynamic` tarda 0.0430 s contra 0.0610 s de `filas` (30% menos), mientras que en la máquina de
+Diego ambas estrategias seguían empatadas hasta ese punto y la diferencia solo aparecía desde los 16
+hilos. Esto es consistente con la hipótesis de la arquitectura híbrida: si algunos hilos corren en
+E-cores más lentos, el desbalance entre hilos aparece con menos hilos activos que en un procesador
+homogéneo, y ahí es exactamente donde `dynamic` tiene margen para reasignar bloques de 64 filas a los
+hilos que van más rápido. `filas` deja de ganar nada entre 16 y 32 hilos (0.0580 s en ambos casos),
+la misma saturación de ancho de banda que se documenta en 3.4, mientras que `dynamic` sigue bajando
+levemente hasta los 0.0420 s con 32 hilos, su mejor tiempo. Con 8 hilos, sin embargo, `dynamic` ya
+tiene 41.0% de eficiencia paralela contra apenas 10.5% con 32 hilos por una mejora de tiempo de menos
+de 1 ms: la mejor relación entre recursos y ganancia en esta máquina está en 8 hilos, no en el
+máximo disponible.
+
+Corrida completa del benchmark:
+
+![Corrida de bench.ps1 en la máquina de Jose](resultados/capturas/bench_jose.png)
 
 ---
 
